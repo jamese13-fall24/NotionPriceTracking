@@ -28,6 +28,7 @@ ENV/
 .playwright/
 playwright-report/
 test-results/
+.playwright_notion_wishlist/
 
 # Environment variables (contains secrets)
 .env

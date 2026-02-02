@@ -160,16 +160,18 @@ def fetch_price(url):
     Returns the extracted price as a float, or None.
     """
     with sync_playwright() as p:
-        browser = p.chromium.launch(
+        # Use a persistent context to maintain cookies between runs
+        # This makes sites like Amazon less suspicious
+        user_data_dir = os.path.expanduser("~/.playwright_notion_wishlist")
+        
+        browser = p.chromium.launch_persistent_context(
+            user_data_dir,
             headless=True,
             args=[
                 '--disable-blink-features=AutomationControlled',
                 '--disable-dev-shm-usage',
                 '--no-sandbox',
-            ]
-        )
-
-        context = browser.new_context(
+            ],
             viewport={'width': 1920, 'height': 1080},
             user_agent=(
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -180,7 +182,7 @@ def fetch_price(url):
             timezone_id='America/Toronto',
         )
 
-        page = context.new_page()
+        page = browser.new_page()
 
         try:
             page.goto(url, wait_until='domcontentloaded', timeout=30000)
@@ -210,8 +212,8 @@ def fetch_price(url):
 def get_wishlist_items():
     """Query Notion for items with an active status."""
     try:
-        results = notion.databases.query(
-            database_id=DATABASE_ID,
+        response = notion.data_sources.query(
+            data_source_id=DATABASE_ID,
             filter={
                 "or": [
                     {"property": "Status", "select": {"equals": "Wishlist"}},
@@ -220,9 +222,10 @@ def get_wishlist_items():
                 ]
             }
         )
-        return results['results']
+        return response.get('results', [])
     except Exception as e:
         print(f"❌ Error querying Notion database: {e}")
+        print(f"   Hint: Make sure the database is shared with your integration")
         return []
 
 
