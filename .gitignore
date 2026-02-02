@@ -1,0 +1,47 @@
+# HTML debug files from test scripts
+*.html
+success_*.html
+blocked_*.html
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Playwright
+.playwright/
+playwright-report/
+test-results/
+
+# Environment variables (contains secrets)
+.env
+.env.local
+
+# Logs
+*.log
+
+# Screenshots from debugging
+*.png
+*.jpg
+*.jpeg
+
+# Temporary files
+tmp/
+temp/
+*.tmp
