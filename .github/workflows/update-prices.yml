@@ -21,6 +21,16 @@ jobs:
         with:
           python-version: '3.11'
       
+      - name: Cache Playwright browsers
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/.playwright_notion_wishlist
+          key: ${{ runner.os }}-playwright-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+      
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
