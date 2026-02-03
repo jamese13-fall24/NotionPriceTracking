@@ -58,11 +58,11 @@ Add these to your repository settings → Secrets and variables → Actions:
 ## 🏪 Supported Retailers
 
 Currently supports:
-- ✅ Amazon (US & Canada)
-- ✅ Walmart (US & Canada)
-- ✅ Target
-- ✅ Best Buy (US & Canada)
-- ✅ eBay (US & Canada)
+- ✅ Amazon.ca
+- ✅ UTdisguise
+- ⏳ EBGames (cooldown between checks)
+- ⏳ Manscaped (cooldown between checks)
+- 🚫 Best Buy (blocked — update manually)
 - ✅ Generic sites (attempts automatic detection)
 
 Need to add a retailer? Check the [customization section](SETUP_GUIDE.md#add-more-retailers) in the setup guide!
@@ -109,11 +109,13 @@ Use [crontab.guru](https://crontab.guru/) to create custom schedules!
 ============================================================
 📊 UPDATE SUMMARY
 ============================================================
-Total items checked:     5
-Successfully updated:    4
-Failed to update:        1
-No URL provided:         0
-Price drops detected:    1
+Total items:              5
+Successfully updated:     3
+Failed to extract:        0
+No URL provided:          0
+Skipped (blocked domain): 1
+Skipped (cooldown):       1
+Price drops detected:     1
 
 ✨ Update complete!
 ============================================================
@@ -164,8 +166,14 @@ See the [Setup Guide](SETUP_GUIDE.md) for more troubleshooting tips!
 
 - `update_prices.py` - Main Python script
 - `requirements.txt` - Python dependencies
-- `.github/workflows/update-prices.yml` - GitHub Actions workflow
+- `setup/` - Diagnostic scripts:
+  - `find_database.py` - Find and verify your Notion database
+  - `test_notion_api.py` - Test Notion API connectivity
+  - `test_price_extraction.py` - Test new sites and get a verdict (blocked / cooldown / fine)
+- `.gitignore` - Excludes `debug/` and `cooldowns.json`
 - `SETUP_GUIDE.md` - Detailed setup instructions
+- `TROUBLESHOOTING.md` - Diagnosing and fixing issues
+- `QUICK_REFERENCE.md` - One-page cheat sheet
 - `README.md` - This file
 
 ## 🤝 Contributing
@@ -184,9 +192,9 @@ This project is open source and available for personal use.
 
 Built with:
 - [Notion API](https://developers.notion.com/)
+- [Playwright](https://playwright.dev/)
 - [Beautiful Soup](https://www.crummy.com/software/BeautifulSoup/)
-- [GitHub Actions](https://github.com/features/actions)
-
+- [Claude AI](https://claude.ai/)
 ---
 
 **Happy price tracking! May all your wish list items go on sale! 🎉**

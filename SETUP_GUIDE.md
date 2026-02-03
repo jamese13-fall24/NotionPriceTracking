@@ -286,7 +286,32 @@ BLOCKED_DOMAINS = [
 - If extraction always fails for a particular retailer
 - If a site uses heavy anti-bot protection
 
-### 7.2 Change Update Schedule
+### 7.2 Manage Cooldown Domains
+
+Some sites allow one visit, then block you for a while before resetting. These go in `COOLDOWN_DOMAINS` instead of being blocked outright:
+
+```python
+# Key: domain substring. Value: minimum minutes between successful checks.
+COOLDOWN_DOMAINS = {
+    "ebgames.ca": 15,
+    "manscaped.com": 15,
+}
+```
+
+**How it works:**
+- On a successful check, the script writes the timestamp to `cooldowns.json`
+- On the next run, if less than the specified minutes have passed, the site is skipped automatically
+- Once the cooldown elapses, it checks again and the cycle repeats
+- `cooldowns.json` is in `.gitignore` — it's local state, not committed
+
+**When to use this instead of BLOCKED_DOMAINS:**
+- The site works sometimes but not every time
+- You notice it fails on back-to-back runs but works after 10–15 minutes
+- The debug HTML shows a human-verification page on the second hit
+
+**Not sure which list a new site belongs in?** Run `python setup/test_price_extraction.py` — it tests each URL twice and gives you a verdict.
+
+### 7.3 Change Update Schedule
 
 Edit `.github/workflows/update-prices.yml`:
 
@@ -303,7 +328,7 @@ Common schedules:
 
 Use https://crontab.guru/ to create custom schedules!
 
-### 7.3 Add More Retailers
+### 7.4 Add More Retailers
 
 Price extraction is handled by the `extract_price_from_html()` function in `update_prices.py`.
 
@@ -338,7 +363,7 @@ elif 'yourstore.com' in domain:
 - Note the HTML tag and class/id
 - Add it to the selectors list
 
-### 7.4 Email Notifications
+### 7.5 Email Notifications
 
 To get emails when prices drop, you can use GitHub's notification features or add a notification step to the workflow.
 
@@ -440,8 +465,8 @@ If you added a "Price History" text field, it will automatically log:
 To only update high-priority items, modify the Notion query in `update_prices.py`:
 
 ```python
-results = notion.databases.query(
-    database_id=DATABASE_ID,
+response = notion.data_sources.query(
+    data_source_id=DATABASE_ID,
     filter={
         "and": [
             {
@@ -454,6 +479,7 @@ results = notion.databases.query(
         ]
     }
 )
+results = response.get('results', [])
 ```
 
 ---

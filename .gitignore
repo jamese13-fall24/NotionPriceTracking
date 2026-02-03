@@ -29,6 +29,11 @@ ENV/
 playwright-report/
 test-results/
 .playwright_notion_wishlist/
+# Debug output from failed price extractions
+debug/
+
+# Cooldown timestamps (local state, not for git)
+cooldowns.json
 
 # Environment variables (contains secrets)
 .env

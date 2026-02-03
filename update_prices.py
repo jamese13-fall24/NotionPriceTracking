@@ -34,6 +34,15 @@ BLOCKED_DOMAINS = [
     "bestbuy.com",
 ]
 
+# Domains that enforce a rate-limit cooldown between visits.
+# Key: domain substring. Value: minimum minutes between successful checks.
+# If the cooldown hasn't elapsed since the last successful check, the site is
+# skipped automatically and retried next run.
+COOLDOWN_DOMAINS = {
+    "ebgames.ca": 15,
+    "manscaped.com": 15,
+}
+
 # ---------------------------------------------------------------------------
 # Price extraction (ported from working test script)
 # ---------------------------------------------------------------------------
@@ -195,7 +204,25 @@ def fetch_price(url):
                 print(f"   ⚠️  Page too small ({len(html)} chars) — likely blocked")
                 return None
 
-            return extract_price_from_html(html, url)
+            price = extract_price_from_html(html, url)
+            
+            # Debug: Save HTML when extraction fails
+            if price is None:
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                debug_dir = os.path.join(script_dir, "debug")
+                os.makedirs(debug_dir, exist_ok=True)
+                
+                domain = urlparse(url).netloc.replace('.', '_')
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                debug_file = os.path.join(debug_dir, f"failed_{domain}_{timestamp}.html")
+                
+                with open(debug_file, 'w', encoding='utf-8') as f:
+                    f.write(html)
+                
+                print(f"   💾 Saved HTML to: {debug_file}")
+                print(f"   Tip: Open this file to see what the page looked like")
+
+            return price
 
         except Exception as e:
             print(f"   ❌ Playwright error: {e}")
@@ -292,6 +319,65 @@ def is_domain_blocked(url):
 
 
 # ---------------------------------------------------------------------------
+# Cooldown tracker
+# ---------------------------------------------------------------------------
+
+COOLDOWN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cooldowns.json")
+
+def load_cooldowns():
+    """Read last-check timestamps from cooldowns.json. Returns {} if missing."""
+    try:
+        with open(COOLDOWN_FILE, 'r') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def save_cooldowns(cooldowns):
+    """Write cooldown timestamps to cooldowns.json."""
+    with open(COOLDOWN_FILE, 'w') as f:
+        json.dump(cooldowns, f, indent=2)
+
+def get_cooldown_domain(url):
+    """
+    If the URL matches a COOLDOWN_DOMAINS entry, return (domain_key, minutes).
+    Otherwise return (None, None).
+    """
+    netloc = urlparse(url).netloc.lower()
+    for domain, minutes in COOLDOWN_DOMAINS.items():
+        if domain in netloc:
+            return domain, minutes
+    return None, None
+
+def is_on_cooldown(url):
+    """
+    Check whether the URL's domain is still within its cooldown window.
+    Returns (True/False, remaining_minutes_or_None).
+    """
+    domain_key, cooldown_minutes = get_cooldown_domain(url)
+    if domain_key is None:
+        return False, None                          # not a cooldown domain at all
+
+    cooldowns = load_cooldowns()
+    last_check = cooldowns.get(domain_key)
+    if last_check is None:
+        return False, None                          # never checked — no cooldown yet
+
+    elapsed = (datetime.now() - datetime.fromisoformat(last_check)).total_seconds() / 60
+    if elapsed < cooldown_minutes:
+        return True, round(cooldown_minutes - elapsed, 1)
+    return False, None
+
+def record_cooldown(url):
+    """Stamp the current time for this URL's cooldown domain."""
+    domain_key, _ = get_cooldown_domain(url)
+    if domain_key is None:
+        return
+    cooldowns = load_cooldowns()
+    cooldowns[domain_key] = datetime.now().isoformat()
+    save_cooldowns(cooldowns)
+
+
+# ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 
@@ -320,6 +406,7 @@ def main():
         'failed': 0,
         'no_url': 0,
         'skipped_blocked': 0,
+        'skipped_cooldown': 0,
         'price_drops': 0,
     }
 
@@ -344,6 +431,14 @@ def main():
             print()
             continue
 
+        # --- cooldown check ---
+        on_cooldown, remaining = is_on_cooldown(url)
+        if on_cooldown:
+            print(f"   ⏳ Rate-limit cooldown — {remaining} min remaining, skipping")
+            stats['skipped_cooldown'] += 1
+            print()
+            continue
+
         # --- fetch & extract ---
         print(f"   🔍 Checking price at {urlparse(url).netloc}...")
         new_price = fetch_price(url)
@@ -353,6 +448,9 @@ def main():
             stats['failed'] += 1
             print()
             continue
+
+        # Stamp cooldown now that we know this domain accepted the request
+        record_cooldown(url)
 
         # --- update Notion ---
         if old_price is not None and new_price < old_price:
@@ -382,6 +480,7 @@ def main():
     print(f"Failed to extract:        {stats['failed']}")
     print(f"No URL provided:          {stats['no_url']}")
     print(f"Skipped (blocked domain): {stats['skipped_blocked']}")
+    print(f"Skipped (cooldown):       {stats['skipped_cooldown']}")
     print(f"Price drops detected:     {stats['price_drops']}")
     print()
     print("✨ Update complete!")

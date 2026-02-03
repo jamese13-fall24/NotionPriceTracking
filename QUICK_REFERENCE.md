@@ -24,7 +24,8 @@
 ### Files You Need
 1. `update_prices.py` - Main script
 2. `requirements.txt` - Dependencies
-3. `.github/workflows/update-prices.yml` - Automation
+3. `setup/` - Diagnostic scripts (find_database, test_notion_api, test_price_extraction)
+4. `.gitignore` - Excludes debug/ and cooldowns.json
 
 ---
 
@@ -35,11 +36,10 @@
 - [ ] Create Notion integration at notion.so/my-integrations
 - [ ] Copy integration token
 - [ ] Share database with integration
-- [ ] Create GitHub repository
-- [ ] Upload files to repository
-- [ ] Add NOTION_API_KEY secret in GitHub
-- [ ] Add NOTION_DATABASE_ID secret in GitHub
-- [ ] Test: Run workflow manually from Actions tab
+- [ ] Set NOTION_API_KEY and NOTION_DATABASE_ID environment variables
+- [ ] `pip install -r requirements.txt` then `playwright install chromium`
+- [ ] Test: `python setup/test_notion_api.py`
+- [ ] Run: `python update_prices.py`
 - [ ] Verify: Check Notion database for updated prices
 
 ---
@@ -61,31 +61,17 @@ https://www.notion.so/workspace/DATABASE_ID?v=...
 ### GitHub Secrets
 Repository → Settings → Secrets and variables → Actions → New repository secret
 
-### Workflow Logs
-Repository → Actions → Click workflow run
-
 ---
 
-## ⏰ Default Schedule
+## 🏪 Site Status
 
-Runs **daily at 9 AM UTC**
-
-Change in `.github/workflows/update-prices.yml`:
-```yaml
-schedule:
-  - cron: '0 9 * * *'
-```
-
----
-
-## 🏪 Supported Sites
-
-- Amazon (US, CA)
-- Walmart (US, CA)
-- Target
-- Best Buy (US, CA)
-- eBay (US, CA)
-- Generic (auto-detect)
+| Site | Status |
+|------|--------|
+| Amazon.ca | ✅ Works |
+| UTdisguise | ✅ Works |
+| EBGames | ⏳ Cooldown (15 min) |
+| Manscaped | ⏳ Cooldown (15 min) |
+| Best Buy | 🚫 Blocked |
 
 ---
 
@@ -94,9 +80,11 @@ schedule:
 | Problem | Solution |
 |---------|----------|
 | No items found | Check Status field = "Wishlist", "Researching", or "Ready to Buy" |
-| Can't extract price | Check URL is valid, website may have changed |
-| Workflow not running | Check secrets are set, Actions enabled |
-| Database error | Verify Database ID, check integration is connected |
+| Can't extract price | Check `debug/` folder for saved HTML |
+| Human-verification page in debug HTML | Add domain to BLOCKED_DOMAINS or COOLDOWN_DOMAINS |
+| Price works once, fails on re-run | Add domain to COOLDOWN_DOMAINS |
+| Notion API errors | Run `python setup/test_notion_api.py` |
+| Not sure how a new site behaves | Run `python setup/test_price_extraction.py`
 
 ---
 

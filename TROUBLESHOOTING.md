@@ -1,273 +1,100 @@
-# Troubleshooting Guide - Price Extraction Issues
-
-## The Problem
-
-Modern e-commerce websites (especially Best Buy Canada, Amazon, Walmart) load prices dynamically using JavaScript. This means when you fetch the HTML with a simple HTTP request, the price hasn't loaded yet - it only appears after JavaScript runs in a browser.
-
-## The Solution
-
-We've updated the script to use **Selenium**, which actually runs a real browser in the background and waits for JavaScript to execute before extracting the price.
+# Troubleshooting Guide
 
 ---
 
-## Quick Fix for Best Buy Canada & Amazon
+## How the script handles difficult sites
 
-### Option 1: Install Selenium (Recommended)
+Not every retailer lets bots in. The script has three tiers for dealing with that, and a tool for figuring out which tier a new site belongs to.
 
-#### On Your Local Computer:
+**BLOCKED_DOMAINS** — sites that consistently refuse automated access (e.g. Best Buy). The script skips them entirely; no request is made. You update these manually.
 
-1. **Install Chrome or Chromium browser** (if not already installed)
-   
-2. **Install Selenium and ChromeDriver:**
-   ```bash
-   pip install selenium==4.16.0
-   pip install webdriver-manager==4.0.1
-   ```
+**COOLDOWN_DOMAINS** — sites that allow one visit, then lock you out for a while before resetting (e.g. EBGames, Manscaped). The script records when it last successfully checked each of these in `cooldowns.json` and skips them until the cooldown window has passed.
 
-3. **Run the script again:**
-   ```bash
-   python update_prices.py
-   ```
+**Everything else** — sites that work every time. No special handling needed.
 
-The script will now automatically use Selenium for Best Buy Canada and other JavaScript-heavy sites!
-
-#### For GitHub Actions:
-
-Update your `.github/workflows/update-prices.yml` file:
-
-```yaml
-name: Update Notion Wish List Prices
-
-on:
-  schedule:
-    - cron: '0 9 * * *'
-  workflow_dispatch:
-
-jobs:
-  update-prices:
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      
-      - name: Install Chrome
-        run: |
-          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable
-      
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      
-      - name: Run price update script
-        env:
-          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
-          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
-        run: |
-          python update_prices.py
-```
-
----
-
-### Option 2: Use the Test Script (Debugging Only)
-
-If you want to see what the script is finding, run the test script:
-
-```bash
-python test_price_extraction.py
-```
-
-This will show you:
-- What data the script can see
-- Where it's looking for prices
-- What it's finding (or not finding)
-
----
-
-## Why This Happens
-
-### Traditional Web Scraping (What Doesn't Work):
-```
-You → HTTP Request → Server → Returns HTML → Parse HTML → No price found!
-```
-The price is missing because it's added by JavaScript AFTER the HTML loads.
-
-### With Selenium (What Works):
-```
-You → Selenium → Opens Real Browser → Loads Page → JavaScript Runs → Price Appears → Extract Price ✓
-```
-
----
-
-## Understanding the Updated Script
-
-The new script:
-
-1. **Detects if a site needs Selenium:**
-   - Best Buy (US & Canada)
-   - Walmart (US & Canada)
-   - Amazon (US & Canada)
-
-2. **Uses one browser instance for all items** (efficient)
-
-3. **Falls back to simple requests** if Selenium isn't available
-
-4. **Provides clear error messages** when Selenium is needed but unavailable
-
----
-
-## Alternative: API-Based Solutions
-
-Some retailers offer APIs for price data:
-
-### Amazon Product Advertising API
-- Requires approval
-- Free for affiliates
-- More reliable than scraping
-- Documentation: https://webservices.amazon.com/paapi5/documentation/
-
-### Best Buy API
-- Best Buy US has an API
-- Best Buy Canada does NOT have a public API
-- https://developer.bestbuy.com/
-
----
-
-## Testing Your Setup
-
-### Test 1: Check if Selenium is installed
+Both lists live at the top of `update_prices.py`:
 
 ```python
-try:
-    from selenium import webdriver
-    print("✅ Selenium is installed")
-except ImportError:
-    print("❌ Selenium is NOT installed")
+BLOCKED_DOMAINS = [
+    "bestbuy.ca",
+    "bestbuy.com",
+]
+
+COOLDOWN_DOMAINS = {
+    "ebgames.ca": 15,       # minutes between checks
+    "manscaped.com": 15,
+}
 ```
 
-### Test 2: Check if Chrome/Chromium is installed
+---
+
+## Testing a new site
+
+Before adding a product from an unfamiliar retailer, run the test script to find out how the site behaves:
 
 ```bash
-# On Linux/Mac
-which google-chrome
-which chromium
-
-# On Windows
-where chrome
+python setup/test_price_extraction.py
 ```
 
-### Test 3: Run the test script
+It opens each URL twice with a short gap and prints a verdict at the end:
 
-```bash
-python test_price_extraction.py
+```
+  Site                 Attempt 1      Attempt 2      Verdict
+  Amazon               $699.99        $699.99        ✅ Leave alone
+  Best Buy             ✗              ✗              🚫 BLOCKED_DOMAINS
+  EBGames              $99.99         ✗              ⏳ COOLDOWN_DOMAINS
 ```
 
+To test a single URL quickly, open the script and set `SINGLE_URL` at the top to your link, then run it. Set it back to `None` when you're done.
+
 ---
 
-## Common Errors and Fixes
+## Reading the debug HTML
 
-### Error: "selenium not found"
-**Fix:** Install selenium
-```bash
-pip install selenium==4.16.0 webdriver-manager==4.0.1
+When extraction fails, the script saves the raw HTML it received into the `debug/` folder:
+
+```
+debug/failed_www_ebgames_ca_20260203_143022.html
 ```
 
-### Error: "chromedriver not found" or "chrome not found"
-**Fix:** Install Chrome browser
-- **Ubuntu/Debian:**
-  ```bash
-  wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-  sudo apt install ./google-chrome-stable_current_amd64.deb
-  ```
-- **Mac:** Download from https://www.google.com/chrome/
-- **Windows:** Download from https://www.google.com/chrome/
+Open that file in your browser. If you see a "verify you're human" page, that site needs to go in `BLOCKED_DOMAINS` or `COOLDOWN_DOMAINS`. If you see the real product page but no price was extracted, the selectors need updating — inspect the price element on the live site and add its tag/class to the site-specific section in `extract_price_from_html()`.
 
-### Error: "Could not extract price" (with Selenium installed)
-**Possible causes:**
-1. Website changed their HTML structure
-2. Product is out of stock
-3. Region restrictions (some prices only show in certain countries)
-4. Bot detection (website blocking automated access)
+---
 
-**Fix:** Run the test script to see what data is available:
-```bash
-python test_price_extraction.py
+## Common issues
+
+**"No items found to update"**
+Check that your items have Status set to Wishlist, Researching, or Ready to Buy. Verify the database is shared with your Notion integration. Run `python setup/find_database.py` to confirm the script can see it.
+
+**"Could not extract price"**
+Check `debug/` for the saved HTML. Either the site blocked you (add to BLOCKED or COOLDOWN), or the page structure changed and the selectors need updating.
+
+**"Page too small — likely blocked"**
+The site returned a tiny response, usually a 403 or captcha page. Add the domain to BLOCKED_DOMAINS.
+
+**Notion API errors**
+Run `python setup/test_notion_api.py` — it tests each operation the main script uses and tells you exactly which one fails.
+
+**Price is wrong / different from what you see in the browser**
+Some sites show different prices based on geography. The script is locked to `en-CA` locale and `America/Toronto` timezone to keep prices consistent. If you're seeing a different price, make sure you're comparing against the Canadian version of the site.
+
+---
+
+## The cooldowns.json file
+
+This file is auto-managed — you don't need to edit it. It records the last time each cooldown domain was successfully checked:
+
+```json
+{
+  "ebgames.ca": "2026-02-03T14:30:22.481200",
+  "manscaped.com": "2026-02-03T14:30:25.103400"
+}
 ```
 
----
-
-## Performance Considerations
-
-### Selenium is Slower
-- Simple request: ~1-2 seconds per item
-- Selenium: ~5-8 seconds per item
-
-For a 10-item wishlist:
-- Without Selenium: ~15 seconds total
-- With Selenium: ~60 seconds total
-
-This is normal - you're launching a real browser for each update.
-
-### GitHub Actions Limits
-- Free tier: 2,000 minutes/month (private repos)
-- With Selenium: Each run takes longer but still well within limits
-- Running daily: ~30 runs × 1 minute = 30 minutes/month (plenty of room)
+If you want to force a re-check of a cooldown site right now, delete the file (or just delete that domain's line) and run the script again. It's in `.gitignore` so it won't get committed.
 
 ---
 
-## Best Practices
+## When to just update manually
 
-1. **Start with a few items** - Test with 2-3 products first
-
-2. **Check compatibility** - Not all retailers work well with scraping
-   - ✅ Amazon (with Selenium)
-   - ✅ Best Buy Canada (with Selenium)
-   - ✅ Walmart
-   - ✅ Target
-   - ⚠️ Some smaller retailers may work inconsistently
-
-3. **Monitor your runs** - Check GitHub Actions logs for the first week
-
-4. **Have a backup plan** - For critical price tracking, manually verify
-
-5. **Respect rate limits** - The script has 2-second delays built in
-
----
-
-## When to Manually Update Prices
-
-Despite automation, you should manually check prices when:
-- About to make a purchase (always verify current price)
-- Item shows as out of stock
-- Price seems suspiciously high or low
-- Website has changed recently
-
----
-
-## Need More Help?
-
-1. **Run the test script** to see what data is available
-2. **Check GitHub Actions logs** for detailed error messages
-3. **Try the URL in your browser** to verify the page loads
-4. **Check if the product is in stock** on the retailer's website
-
----
-
-## Summary
-
-- **Best Buy Canada & Amazon need Selenium** to extract prices
-- **Install Selenium locally:** `pip install selenium webdriver-manager`
-- **Update GitHub Actions workflow** to install Chrome
-- **Test your setup** with the test script before relying on automation
-- **Expect slower performance** with Selenium (5-8 seconds per item vs 1-2 seconds)
-
-The updated script handles all of this automatically - just install the dependencies!
+If a site consistently fails even after debugging, it's not worth the fight. Add it to BLOCKED_DOMAINS and update that price by hand when you visit the product page anyway. A blocked site costs you nothing — a broken scrape just wastes a run.
