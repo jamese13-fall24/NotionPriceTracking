@@ -16,16 +16,11 @@ from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration  (populated by main() before use — see bottom of file)
 # ---------------------------------------------------------------------------
 
-NOTION_API_KEY = os.environ.get("NOTION_API_KEY")
-DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
-
-if not NOTION_API_KEY or not DATABASE_ID:
-    raise ValueError("Missing required environment variables: NOTION_API_KEY or NOTION_DATABASE_ID")
-
-notion = Client(auth=NOTION_API_KEY)
+notion = None          # notion_client.Client instance
+DATABASE_ID = None     # target database ID string
 
 # Domains that are known to block automated requests.
 # Any URL whose host contains one of these strings will be skipped entirely.
@@ -381,7 +376,18 @@ def record_cooldown(url):
 # Main loop
 # ---------------------------------------------------------------------------
 
-def main():
+def main(api_key, database_id):
+    """
+    Run the full price-update loop.
+
+    api_key      – Notion integration token (ntn_...)
+    database_id  – target database ID
+    """
+    # Wire module-level globals so all helpers see the right client & DB
+    global notion, DATABASE_ID
+    notion = Client(auth=api_key)
+    DATABASE_ID = database_id
+
     print("=" * 60)
     print("🚀 Starting Notion Wish List Price Update")
     print(f"⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -488,4 +494,15 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # Standalone mode: reads from environment variables.
+    # Preferred way to run is via run.py, but this still works if you
+    # have the env vars set.
+    _key = os.environ.get("NOTION_API_KEY")
+    _db  = os.environ.get("NOTION_DATABASE_ID")
+    if not _key or not _db:
+        raise ValueError(
+            "Missing env vars. Either run via run.py or set:\n"
+            "  $env:NOTION_API_KEY='ntn_...'\n"
+            "  $env:NOTION_DATABASE_ID='...'"
+        )
+    main(_key, _db)

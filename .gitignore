@@ -35,6 +35,9 @@ debug/
 # Cooldown timestamps (local state, not for git)
 cooldowns.json
 
+# Notion API key (local state, not for git)
+config.json
+
 # Environment variables (contains secrets)
 .env
 .env.local
