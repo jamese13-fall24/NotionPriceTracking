@@ -22,11 +22,13 @@ from playwright.sync_api import sync_playwright
 notion = None          # notion_client.Client instance
 DATABASE_ID = None     # target database ID string
 
-# Domains that are known to block automated requests.
+# Domains that are known to block automated requests or want to be skipped intentionally
 # Any URL whose host contains one of these strings will be skipped entirely.
 BLOCKED_DOMAINS = [
     "bestbuy.ca",
     "bestbuy.com",
+    "gooeycandy.bigcartel.com",
+    "manscaped.com",
 ]
 
 # Domains that enforce a rate-limit cooldown between visits.
@@ -35,7 +37,31 @@ BLOCKED_DOMAINS = [
 # skipped automatically and retried next run.
 COOLDOWN_DOMAINS = {
     "ebgames.ca": 15,
-    "manscaped.com": 15,
+}
+
+
+# Domains that display prices in USD (will be converted to CAD)
+USD_DOMAINS = [
+    "amazon.com",
+    "walmart.com",
+    "target.com",
+    "newegg.com",
+    "ufmunderwear.com",
+    "goodfor.life",
+    "lovense.com",
+    "dungeon-lab.com",
+    "smitizen.com",
+    "bigcartel.com",
+    "fsman.net",
+    "kimurakami.com",
+]
+
+# Exchange rate: USD to CAD
+# Update this monthly - format: YYYY-MM = rate
+EXCHANGE_RATES = {
+    "2026-01": 1.3778,  # January 2026
+    "2026-02": 1.3651,  # February 2026
+    "2026-03": 1.3717,  # March 2026
 }
 
 # ---------------------------------------------------------------------------
@@ -61,20 +87,51 @@ def extract_price_from_html(html, url):
             if not script.string:
                 continue
             data = json.loads(script.string)
-            price = None
 
-            if isinstance(data, dict):
-                if 'price' in data:
-                    price = data['price']
-                elif 'offers' in data:
-                    offers = data['offers']
-                    if isinstance(offers, dict):
-                        price = offers.get('price') or offers.get('lowPrice')
-                    elif isinstance(offers, list) and offers:
-                        price = offers[0].get('price')
+            def extract_price_currency(obj):
+                if isinstance(obj, dict):
+                    # price key found
+                    if 'price' in obj:
+                        return obj.get('price'), obj.get('priceCurrency')
 
-            if price is not None:
+                    # price inside offers
+                    if 'offers' in obj:
+                        offers = obj['offers']
+                        if isinstance(offers, dict):
+                            price = offers.get('price') or offers.get('lowPrice')
+                            currency = offers.get('priceCurrency')
+                        elif isinstance(offers, list):
+                            for offer in offers:
+                                if isinstance(offer, dict):
+                                    price = offer.get('price') or offer.get('lowPrice')
+                                    currency = offer.get('priceCurrency')
+                        if price is not None:
+                            return price, currency
+                        
+                    # price inside @graph
+                    if '@graph' in obj and isinstance(obj['@graph'], list):
+                        for item in obj['@graph']:
+                            result = extract_price_currency(item)
+                            if result is not None:
+                                return result
+                            
+                elif isinstance(obj, list):
+                    for item in obj:
+                        result = extract_price_currency(item)
+                        if result is not None:
+                            return result
+                
+                return None
+
+            result = extract_price_currency(data)
+            if result is not None:
+                price, price_currency = result
+                # Skip if explicitly USD and we're on a .ca or cad domain
+                if price_currency == 'USD' and ('.ca' in domain or 'en-ca' in url):
+                    continue  # Keep searching for CAD price
+
                 return float(str(price).replace(',', '').replace('$', '').strip())
+            
         except (json.JSONDecodeError, ValueError, KeyError, TypeError):
             continue
 
@@ -89,6 +146,11 @@ def extract_price_from_html(html, url):
     for attr, value in meta_selectors:
         meta = soup.find('meta', {attr: value})
         if meta and meta.get('content'):
+            # Check if there's a currency meta tag
+            currency_meta = soup.find('meta', {'property': 'og:price:currency'})
+            if currency_meta and currency_meta.get('content') == 'USD' and ('.ca' in domain or 'en-ca' in url):
+                continue  # Skip USD on .ca domains
+
             try:
                 return float(meta['content'].replace(',', '').replace('$', '').strip())
             except (ValueError, TypeError):
@@ -109,6 +171,45 @@ def extract_price_from_html(html, url):
         for tag, attrs in amazon_selectors:
             for elem in soup.find_all(tag, attrs):
                 match = re.search(r'[\$]?\s*([0-9,]+\.\d{2})', elem.get_text().strip())
+                if match:
+                    try:
+                        return float(match.group(1).replace(',', ''))
+                    except ValueError:
+                        continue
+
+    elif 'furrjoi' in domain:  # Replace YOURDOMAIN with actual domain keyword
+        # This site has a price breakdown with OriginPrice, Subtotal, Discount, Shipping, Total
+        # We want the Total specifically
+        
+        # Strategy 1: Look for the "Total" label and get the next price value
+        total_label = soup.find('div', class_='label', string=lambda s: s and 'Total' in s)
+        if total_label:
+            # Find the parent container
+            parent = total_label.find_parent()
+            if parent:
+                # Look for the value div within the same container
+                value_div = parent.find('div', class_='value')
+                if value_div:
+                    price_text = value_div.get_text().strip()
+                    # Extract price from "CA$1,647.76"
+                    match = re.search(r'CA\$\s*([0-9,]+\.\d{2})', price_text)
+                    if match:
+                        try:
+                            return float(match.group(1).replace(',', ''))
+                        except ValueError:
+                            pass
+        
+        # Strategy 2: Look for div with "!text-lg" class (used for Total)
+        # but exclude the one with "line-through" (OriginPrice)
+        for elem in soup.find_all('div', class_='value'):
+            # Skip if it has line-through (that's OriginPrice)
+            if 'line-through' in elem.get('class', []) or elem.find_parent(attrs={'line-through': True}):
+                continue
+            
+            # Check if this is the large text price (Total has !text-lg)
+            if '!text-lg' in elem.get('class', []):
+                price_text = elem.get_text().strip()
+                match = re.search(r'CA\$\s*([0-9,]+\.\d{2})', price_text)
                 if match:
                     try:
                         return float(match.group(1).replace(',', ''))
@@ -371,6 +472,33 @@ def record_cooldown(url):
     cooldowns[domain_key] = datetime.now().isoformat()
     save_cooldowns(cooldowns)
 
+# ---------------------------------------------------------------------------
+# Exchange Rate value
+# ---------------------------------------------------------------------------
+
+def get_current_exchange_rate():
+    """
+    Get the exchange rate for the current month.
+    Falls back to the most recent rate if current month not defined.
+    """
+    from datetime import datetime
+    current_month = datetime.now().strftime("%Y-%m")
+    
+    # Try current month first
+    if current_month in EXCHANGE_RATES:
+        return EXCHANGE_RATES[current_month]
+    
+    # Fall back to most recent rate
+    if EXCHANGE_RATES:
+        # Get the most recent month (sorted descending)
+        latest_month = sorted(EXCHANGE_RATES.keys(), reverse=True)[0]
+        rate = EXCHANGE_RATES[latest_month]
+        print(f"   💱 Using {latest_month} exchange rate: {rate} (current month not defined)")
+        return rate
+    
+    # Ultimate fallback
+    print("   ⚠️  No exchange rate defined, using 1.35 as default")
+    return 1.35
 
 # ---------------------------------------------------------------------------
 # Main loop
@@ -413,6 +541,7 @@ def main(api_key, database_id):
         'no_url': 0,
         'skipped_blocked': 0,
         'skipped_cooldown': 0,
+        'converted': 0,
         'price_drops': 0,
     }
 
@@ -437,6 +566,28 @@ def main(api_key, database_id):
             print()
             continue
 
+        # --- current exchange ---
+        def is_usd_domain(url):
+            """Return True if the URL's host matches any entry in USD_DOMAINS."""
+            domain = urlparse(url).netloc.lower()
+            return any(usd in domain for usd in USD_DOMAINS)
+
+
+        def convert_to_cad(usd_price, url):
+            """
+            Convert USD price to CAD using the current month's exchange rate.
+            Returns (cad_price, exchange_rate).
+            """
+            rate = get_current_exchange_rate()
+            cad_price = usd_price * rate
+            
+            domain = urlparse(url).netloc
+            print(f"   💱 {domain} price in USD: ${usd_price:.2f}")
+            print(f"   💱 Exchange rate: {rate}")
+            print(f"   💱 Converted to CAD: ${cad_price:.2f}")
+            
+            return cad_price, rate
+
         # --- cooldown check ---
         on_cooldown, remaining = is_on_cooldown(url)
         if on_cooldown:
@@ -447,9 +598,9 @@ def main(api_key, database_id):
 
         # --- fetch & extract ---
         print(f"   🔍 Checking price at {urlparse(url).netloc}...")
-        new_price = fetch_price(url)
+        extracted_price = fetch_price(url)
 
-        if new_price is None:
+        if extracted_price is None:
             print("   ❌ Could not extract price")
             stats['failed'] += 1
             print()
@@ -457,6 +608,13 @@ def main(api_key, database_id):
 
         # Stamp cooldown now that we know this domain accepted the request
         record_cooldown(url)
+
+        # --- USD to CAD conversion ---
+        if is_usd_domain(url):
+            new_price, exchange_rate = convert_to_cad(extracted_price, url)
+            stats['converted'] += 1
+        else:
+            new_price = extracted_price
 
         # --- update Notion ---
         if old_price is not None and new_price < old_price:
@@ -487,6 +645,7 @@ def main(api_key, database_id):
     print(f"No URL provided:          {stats['no_url']}")
     print(f"Skipped (blocked domain): {stats['skipped_blocked']}")
     print(f"Skipped (cooldown):       {stats['skipped_cooldown']}")
+    print(f"USD→CAD converted:        {stats['converted']}")
     print(f"Price drops detected:     {stats['price_drops']}")
     print()
     print("✨ Update complete!")

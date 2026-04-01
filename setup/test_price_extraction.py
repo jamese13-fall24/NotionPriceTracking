@@ -6,7 +6,8 @@ Use this when evaluating a new site to decide whether to:
   - Leave it alone (works every time)
 
 The script runs each URL twice with a short gap and compares results,
-then prints a clear verdict for each.
+then prints a clear verdict for each. Automatically converts USD prices
+to CAD using the current month's exchange rate.
 
 Usage:
     python setup/test_price_extraction.py
@@ -29,7 +30,7 @@ from playwright.sync_api import sync_playwright
 # ---------------------------------------------------------------------------
 # Quick single-URL mode — paste a URL here to test just that one
 # ---------------------------------------------------------------------------
-SINGLE_URL = None
+SINGLE_URL = "https://kimurakami.com/collections/sukajan/products/dragon-souvenir-jacket"
 # SINGLE_URL = "https://www.example.com/some-product"
 
 
@@ -37,13 +38,68 @@ SINGLE_URL = None
 # Default test URLs (edit freely)
 # ---------------------------------------------------------------------------
 DEFAULT_URLS = [
-    ("Amazon",       "https://www.amazon.ca/dp/B0FC5FJZ9Z"),
+    ("Amazon CA",    "https://www.amazon.ca/dp/B0FC5FJZ9Z"),
+    ("Amazon US",    "https://www.amazon.com/dp/B0FC5FJZ9Z"),
     ("Best Buy",     "https://www.bestbuy.ca/en-ca/product/beats-by-dr-dre-studio-pro-over-ear-noise-cancelling-bluetooth-headphones-grey-only-at-best-buy/19392064"),
     ("Manscaped",    "https://ca.manscaped.com/products/the-platinum-package-5"),
-    ("UTdisguise",   "https://www.utdisguisemastermask.com/products/leo-drone-mask"),
-    ("EBGames",      "https://www.ebgames.ca/Switch/Games/941077/super-mario-galaxy-super-mario-galaxy-2"),
 ]
 
+
+# ---------------------------------------------------------------------------
+# USD to CAD conversion configuration
+# ---------------------------------------------------------------------------
+
+# Domains that display prices in USD (will be converted to CAD)
+USD_DOMAINS = [
+    "amazon.com",
+    "walmart.com",
+    "target.com",
+    "newegg.com",
+    "ufmunderwear.com",
+    "goodfor.life",
+    "lovense.com",
+    "dungeon-lab.com",
+    "smitizen.com",
+    "bigcartel.com",
+    "fsman.net",
+    "kimurakami.com",
+]
+ 
+# Exchange rate: USD to CAD
+# Update this monthly - format: YYYY-MM = rate
+EXCHANGE_RATES = {
+    "2026-01": 1.3778,  # January 2026
+    "2026-02": 1.3651,  # February 2026
+    "2026-03": 1.3717,  # March 2026
+}
+
+def get_current_exchange_rate():
+    """
+    Get the exchange rate for the current month.
+    Falls back to the most recent rate if current month not defined.
+    """
+    current_month = datetime.now().strftime("%Y-%m")
+    
+    # Try current month first
+    if current_month in EXCHANGE_RATES:
+        return EXCHANGE_RATES[current_month]
+    
+    # Fall back to most recent rate
+    if EXCHANGE_RATES:
+        latest_month = sorted(EXCHANGE_RATES.keys(), reverse=True)[0]
+        rate = EXCHANGE_RATES[latest_month]
+        print(f"   💱 Using {latest_month} exchange rate: {rate} (current month not defined)")
+        return rate
+    
+    # Ultimate fallback
+    print("   ⚠️  No exchange rate defined, using 1.35 as default")
+    return 1.35
+ 
+ 
+def is_usd_domain(url):
+    """Return True if the URL's host matches any entry in USD_DOMAINS."""
+    domain = urlparse(url).netloc.lower()
+    return any(usd in domain for usd in USD_DOMAINS)
 
 # ---------------------------------------------------------------------------
 # Price extraction — kept in sync with update_prices.py
@@ -56,6 +112,7 @@ def extract_price_from_html(html, url):
     """
     soup = BeautifulSoup(html, 'html.parser')
     domain = urlparse(url).netloc
+    
 
     # Method 1: JSON-LD
     for script in soup.find_all('script', {'type': 'application/ld+json'}):
@@ -63,18 +120,56 @@ def extract_price_from_html(html, url):
             if not script.string:
                 continue
             data = json.loads(script.string)
-            price = None
-            if isinstance(data, dict):
-                if 'price' in data:
-                    price = data['price']
-                elif 'offers' in data:
-                    offers = data['offers']
-                    if isinstance(offers, dict):
-                        price = offers.get('price') or offers.get('lowPrice')
-                    elif isinstance(offers, list) and offers:
-                        price = offers[0].get('price')
-            if price is not None:
+
+            def extract_price_currency(obj):
+                if isinstance(obj, dict):
+                    # price key found
+                    if 'price' in obj:
+                        return obj.get('price'), obj.get('priceCurrency')
+
+                    # price inside offers
+                    if 'offers' in obj:
+                        offers = obj['offers']
+
+                        if isinstance(offers, dict):
+                            price = offers.get('price') or offers.get('lowPrice')
+                            currency = offers.get('priceCurrency')
+                            if price is not None:
+                                return price, currency
+                        
+                        elif isinstance(offers, list):
+                            for offer in offers:
+                                if isinstance(offer, dict):
+                                    price = offer.get('price') or offer.get('lowPrice')
+                                    currency = offer.get('priceCurrency')
+                                    if price is not None:
+                                        return price, currency
+                        
+                    # price inside @graph
+                    if '@graph' in obj and isinstance(obj['@graph'], list):
+                        for item in obj['@graph']:
+                            result = extract_price_currency(item)
+                            if result is not None:
+                                return result
+                            
+                elif isinstance(obj, list):
+                    for item in obj:
+                        result = extract_price_currency(item)
+                        if result is not None:
+                            return result
+                
+                return None
+
+            result = extract_price_currency(data)
+            if result is not None:
+                print("JSON Price")
+                price, price_currency = result
+                # Skip if explicitly USD and we're on a .ca or cad domain
+                if price_currency == 'USD' and ('.ca' in domain or 'en-ca' in url):
+                    continue  # Keep searching for CAD price
+                
                 return float(str(price).replace(',', '').replace('$', '').strip())
+            
         except (json.JSONDecodeError, ValueError, KeyError, TypeError):
             continue
 
@@ -84,6 +179,11 @@ def extract_price_from_html(html, url):
                         ('name', 'twitter:data1')]:
         meta = soup.find('meta', {attr: value})
         if meta and meta.get('content'):
+            # Check if there's a currency meta tag
+            currency_meta = soup.find('meta', {'property': 'og:price:currency'})
+            if currency_meta and currency_meta.get('content') == 'USD' and ('.ca' in domain or 'en-ca' in url):
+                continue  # Skip USD on .ca domains
+
             try:
                 return float(meta['content'].replace(',', '').replace('$', '').strip())
             except (ValueError, TypeError):
@@ -104,6 +204,80 @@ def extract_price_from_html(html, url):
                         return float(match.group(1).replace(',', ''))
                     except ValueError:
                         continue
+
+    elif 'furrjoi' in domain:  # Replace YOURDOMAIN with actual domain keyword
+        # This site has a price breakdown with OriginPrice, Subtotal, Discount, Shipping, Total
+        # We want the Total specifically
+        
+        # Strategy 1: Look for the "Total" label and get the next price value
+        total_label = soup.find('div', class_='label', string=lambda s: s and 'Total' in s)
+        if total_label:
+            # Find the parent container
+            parent = total_label.find_parent()
+            if parent:
+                # Look for the value div within the same container
+                value_div = parent.find('div', class_='value')
+                if value_div:
+                    price_text = value_div.get_text().strip()
+                    # Extract price from "CA$1,647.76"
+                    match = re.search(r'CA\$\s*([0-9,]+\.\d{2})', price_text)
+                    if match:
+                        try:
+                            return float(match.group(1).replace(',', ''))
+                        except ValueError:
+                            pass
+        
+        # Strategy 2: Look for div with "!text-lg" class (used for Total)
+        # but exclude the one with "line-through" (OriginPrice)
+        for elem in soup.find_all('div', class_='value'):
+            # Skip if it has line-through (that's OriginPrice)
+            if 'line-through' in elem.get('class', []) or elem.find_parent(attrs={'line-through': True}):
+                continue
+            
+            # Check if this is the large text price (Total has !text-lg)
+            if '!text-lg' in elem.get('class', []):
+                price_text = elem.get_text().strip()
+                match = re.search(r'CA\$\s*([0-9,]+\.\d{2})', price_text)
+                if match:
+                    try:
+                        return float(match.group(1).replace(',', ''))
+                    except ValueError:
+                        continue
+
+    # elif 'lastquarterstudios' in domain:
+    #     # This site shows both USD (in meta) and CAD (visible)
+    #     # Prioritize the CAD price
+    #     cad_selectors = [
+    #         ('span', {'class': 'cad-price'}),
+    #         ('div', {'class': 'price-cad'}),
+    #         ('span', {'data-currency': 'CAD'}),
+    #     ]
+    #     for tag, attrs in cad_selectors:
+    #         for elem in soup.find_all(tag, attrs):
+    #             text = elem.get_text().strip()
+    #             # Match CA$599.99 or $599.99
+    #             match = re.search(r'(?:CA)?\$\s*([0-9,]+\.\d{2})', text)
+    #             if match:
+    #                 try:
+    #                     return float(match.group(1).replace(',', ''))
+    #                 except ValueError:
+    #                     continue
+
+    # elif 'smitizen' in domain:
+    #     # This site shows an regular price and a sale price (both in USD)
+    #     cad_selectors = [
+    #         ('span', {'class': 'sale_price'}),
+    #     ]
+    #     for tag, attrs in cad_selectors:
+    #         for elem in soup.find_all(tag, attrs):
+    #             text = elem.get_text().strip()
+    #             # Match CA$599.99 or $599.99
+    #             match = re.search(r'(?:CA)?\$\s*([0-9,]+\.\d{2})', text)
+    #             if match:
+    #                 try:
+    #                     return float(match.group(1).replace(',', ''))
+    #                 except ValueError:
+    #                     continue
 
     elif 'bestbuy' in domain:
         for tag, attrs in [('span', {'class': re.compile('screenReaderOnly', re.IGNORECASE)}),
@@ -141,7 +315,7 @@ def extract_price_from_html(html, url):
 def fetch(url):
     """
     Fetch the page using the same persistent-context settings as
-    update_prices.py.  Returns (price_or_None, html_string).
+    update_prices.py.  Returns (price, html, is_usd).
     """
     with sync_playwright() as p:
         user_data_dir = os.path.expanduser("~/.playwright_notion_wishlist")
@@ -171,14 +345,15 @@ def fetch(url):
             html = page.content()
 
             if len(html) < 5000:
-                return None, html          # blocked / too small
+                return None, html, False          # blocked / too small
 
             price = extract_price_from_html(html, url)
-            return price, html
+            is_usd = is_usd_domain(url)
+            return price, html, is_usd
 
         except Exception as e:
             print(f"   ⚠️  Playwright error: {e}")
-            return None, ""
+            return None, "", False
 
         finally:
             browser.close()
@@ -218,6 +393,7 @@ def main():
     print("=" * 70)
     print(f"   Testing {len(urls)} URL(s), 2 attempts each (3 s gap)")
     print(f"   Browser will open visibly (less suspicious to sites)")
+    print(f"   Exchange rate: {get_current_exchange_rate()} USD→CAD")
     print("=" * 70)
     print()
 
@@ -231,21 +407,36 @@ def main():
         print(f"🔍 {name}")
         print(f"   {url}")
         print("-" * 70)
-        results[name] = {"url": url, "attempts": []}
+        results[name] = {"url": url, "attempts": [], "is_usd": False, "exchange_rate": None,}
 
         for attempt in (1, 2):
             print(f"\n   Attempt {attempt}...")
-            price, html = fetch(url)
+            price, html, is_usd = fetch(url)
 
             if price is not None:
-                print(f"   ✅ ${price}")
+                # Convert if USD
+                if is_usd:
+                    rate = get_current_exchange_rate()
+                    cad_price = price * rate
+                    results[name]["is_usd"] = True
+                    results[name]["exchange_rate"] = rate
+                    results[name][f"usd_price_attempt{attempt}"] = price
+                    
+                    print(f"   💱 Extracted USD: ${price:.2f}")
+                    print(f"   💱 Exchange rate: {rate}")
+                    print(f"   ✅ Converted CAD: ${cad_price:.2f}")
+                    
+                    results[name]["attempts"].append(cad_price)
+                else:
+                    print(f"   ✅ ${price:.2f} CAD")
+                    results[name]["attempts"].append(price)
             else:
                 print(f"   ❌ no price extracted")
+                results[name]["attempts"].append(None)
                 # Save HTML for inspection
                 path = save_debug_html(f"attempt{attempt}_{name.lower()}", urlparse(url).netloc, html)
                 print(f"   💾 debug HTML → {path}")
 
-            results[name]["attempts"].append(price)
 
             if attempt == 1:
                 print(f"\n   ⏳ Waiting 3 s before attempt 2...")
@@ -265,15 +456,37 @@ def main():
     print("  Add to COOLDOWN_DOMAINS  → works once, then needs a break")
     print("  Leave alone              → works every time")
     print()
-    print("-" * 70)
-    print(f"  {'Site':<20} {'Attempt 1':<14} {'Attempt 2':<14} {'Verdict'}")
-    print("-" * 70)
+    print("-" * 110)
+    print(f"  {'Site':<20} {'Attempt 1':<35} {'Attempt 2':<35} {'Verdict'}")
+    print("-" * 110)
 
     for name, data in results.items():
         a1, a2 = data["attempts"]
-        a1_str = f"${a1}" if a1 else "✗"
-        a2_str = f"${a2}" if a2 else "✗"
+        is_usd = data["is_usd"]
 
+        # Format with currency indicator
+        if is_usd:
+            usd1 = data.get("usd_price_attempt1")
+            usd2 = data.get("usd_price_attempt2")
+            
+            if a1:
+                a1_str = f"${a1:.2f} CAD"
+                if usd1:
+                    a1_str += f" (${usd1:.2f} USD)"
+            else:
+                a1_str = "✗"
+                
+            if a2:
+                a2_str = f"${a2:.2f} CAD"
+                if usd2:
+                    a2_str += f" (${usd2:.2f} USD)"
+            else:
+                a2_str = "✗"
+        else:
+            a1_str = f"${a1:.2f} CAD" if a1 else "✗"
+            a2_str = f"${a2:.2f} CAD" if a2 else "✗"
+
+        # Determine verdict
         if a1 and a2:
             verdict = "✅ Leave alone"
         elif a1 and not a2:
@@ -284,9 +497,9 @@ def main():
             # failed first, worked second — unusual, could be transient
             verdict = "⚠️  Rerun to confirm"
 
-        print(f"  {name:<20} {a1_str:<14} {a2_str:<14} {verdict}")
+        print(f"  {name:<20} {a1_str:<35} {a2_str:<35} {verdict}")
 
-    print("-" * 70)
+    print("-" * 110)
     print()
     print("Debug HTML for failed attempts is in the project's debug/ folder.")
     print("=" * 70)
